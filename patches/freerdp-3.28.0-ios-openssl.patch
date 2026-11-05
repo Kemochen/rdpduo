@@ -1,0 +1,25 @@
+diff --git a/client/iOS/cmake/ExternalFreeRDP.cmake b/client/iOS/cmake/ExternalFreeRDP.cmake
+index 5691e12..8325baf 100644
+--- a/client/iOS/cmake/ExternalFreeRDP.cmake
++++ b/client/iOS/cmake/ExternalFreeRDP.cmake
+@@ -1,9 +1,18 @@
+ find_package(PkgConfig REQUIRED)
+ 
+ if(WITH_OPENSSL)
++  list(APPEND SSL_ARGS -DOPENSSL_ROOT_DIR:PATH=${DEPS_INSTALL_DIR}
++       -DOPENSSL_INCLUDE_DIR:PATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_INCLUDEDIR}
++  )
+   if(BUILD_SHARED_LIBS)
+-    list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=OFF)
++    list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=OFF
++         -DOPENSSL_SSL_LIBRARY:FILEPATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libssl.dylib
++         -DOPENSSL_CRYPTO_LIBRARY:FILEPATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libcrypto.dylib
++    )
+   else()
+-    list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=ON)
++    list(APPEND SSL_ARGS -DOPENSSL_USE_STATIC_LIBS=ON
++         -DOPENSSL_SSL_LIBRARY:FILEPATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libssl.a
++         -DOPENSSL_CRYPTO_LIBRARY:FILEPATH=${DEPS_INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/libcrypto.a
++    )
+   endif()
+ endif()

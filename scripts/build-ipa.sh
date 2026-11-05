@@ -21,6 +21,8 @@ echo "Cloning FreeRDP ${FREERDP_REF}"
 git clone --depth 1 --branch "${FREERDP_REF}" https://github.com/FreeRDP/FreeRDP.git "${SOURCE_DIR}"
 git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-iphone-duo.patch"
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-iphone-duo.patch"
+git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-openssl.patch"
+git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-openssl.patch"
 
 echo "Configuring arm64 iOS device build"
 cmake -S "${SOURCE_DIR}/client/iOS" -B "${BUILD_DIR}" \
