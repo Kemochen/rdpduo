@@ -1,0 +1,59 @@
+diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
+index 0fde5e3..d7591c8 100644
+--- a/client/iOS/Models/RDPSession.m
++++ b/client/iOS/Models/RDPSession.m
+@@ -17,6 +17,7 @@
+ #import "TSXTypes.h"
+ #import "Bookmark.h"
+ #import "ConnectionParams.h"
++#include <freerdp/config.h>
+ 
+ NSString *TSXSessionDidDisconnectNotification = @"TSXSessionDidDisconnect";
+ NSString *TSXSessionDidFailToConnectNotification = @"TSXSessionDidFailToConnect";
+@@ -98,6 +99,7 @@ static void freeArguments(int argc, char **argv)
+ 	_freerdp = ios_freerdp_new();
+ 	_ui_request_completed = [[NSCondition alloc] init];
+ 	BOOL connected_via_3g = ![bookmark conntectedViaWLAN];
++	BOOL use_h264 = NO;
+ 
+ 	if (!addArgument(&argc, &argv, "iFreeRDP"))
+ 		goto out_free;
+@@ -168,13 +170,16 @@ static void freeArguments(int argc, char **argv)
+ 		if (!addArgument(&argc, &argv, "/gfx"))
+ 			goto out_free;
+ 
+-	if ([_params boolForKey:@"perf_h264" with3GEnabled:connected_via_3g])
++#if defined(WITH_GFX_H264)
++	use_h264 = [_params boolForKey:@"perf_h264" with3GEnabled:connected_via_3g];
++	if (use_h264)
+ 		if (!addArgument(&argc, &argv, "/gfx:AVC444"))
+ 			goto out_free;
++#endif
+ 
+ 	if (![_params boolForKey:@"perf_remotefx" with3GEnabled:connected_via_3g] &&
+ 	    ![_params boolForKey:@"perf_gfx" with3GEnabled:connected_via_3g] &&
+-	    ![_params boolForKey:@"perf_h264" with3GEnabled:connected_via_3g])
++	    !use_h264)
+ 		if (!addArgument(&argc, &argv, "/nsc"))
+ 			goto out_free;
+ 
+diff --git a/client/iOS/Controllers/BookmarkListController.m b/client/iOS/Controllers/BookmarkListController.m
+index 150c57b..ec2ff6e 100644
+--- a/client/iOS/Controllers/BookmarkListController.m
++++ b/client/iOS/Controllers/BookmarkListController.m
+@@ -613,6 +613,15 @@
+ 		{
+ 			// create rdp session
+ 			RDPSession *session = [[[RDPSession alloc] initWithBookmark:bookmark] autorelease];
++			if (session == nil)
++			{
++				[[self view]
++				    makeToast:NSLocalizedString(@"Unsupported connection settings.",
++				                                @"Session initialization error message")
++				     duration:ToastDurationNormal
++				     position:@"center"];
++				return;
++			}
+ 			UIViewController *ctrl =
+ 			    [[[RDPSessionViewController alloc] initWithNibName:@"RDPSessionView"
+ 			                                                bundle:nil
