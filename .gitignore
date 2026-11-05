@@ -1,5 +1,6 @@
 .build/
 .diagnostics/
+.simulator-build/
 .DS_Store
 *.ipa
 *.xcarchive

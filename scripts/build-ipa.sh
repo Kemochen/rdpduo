@@ -78,7 +78,51 @@ plutil -replace CFBundleDisplayName -string DuoRDP \
 
 EXECUTABLE_NAME="$(plutil -extract CFBundleExecutable raw \
   "${PACKAGE_DIR}/Payload/DuoRDP.app/Info.plist")"
-lipo -info "${PACKAGE_DIR}/Payload/DuoRDP.app/${EXECUTABLE_NAME}"
+APP_DIR="${PACKAGE_DIR}/Payload/DuoRDP.app"
+lipo -info "${APP_DIR}/${EXECUTABLE_NAME}"
+
+missing_dependency=0
+validate_macho_dependencies() {
+  local binary="$1"
+  local dependency
+  local resolved
+
+  while IFS= read -r dependency; do
+    case "${dependency}" in
+      @rpath/*)
+        resolved="${APP_DIR}/Frameworks/${dependency#@rpath/}"
+        ;;
+      @executable_path/*)
+        resolved="${APP_DIR}/${dependency#@executable_path/}"
+        ;;
+      @loader_path/*)
+        resolved="$(dirname "${binary}")/${dependency#@loader_path/}"
+        ;;
+      /System/Library/*|/usr/lib/*)
+        continue
+        ;;
+      *)
+        echo "::error title=Invalid Mach-O dependency::${binary} references ${dependency}"
+        missing_dependency=1
+        continue
+        ;;
+    esac
+
+    if [[ ! -e "${resolved}" ]]; then
+      echo "::error title=Missing Mach-O dependency::${binary} requires ${dependency}"
+      missing_dependency=1
+    fi
+  done < <(otool -L "${binary}" | tail -n +2 | awk '{print $1}')
+}
+
+validate_macho_dependencies "${APP_DIR}/${EXECUTABLE_NAME}"
+while IFS= read -r dylib; do
+  validate_macho_dependencies "${dylib}"
+done < <(find "${APP_DIR}" -type f -name '*.dylib' -print)
+
+if [[ "${missing_dependency}" -ne 0 ]]; then
+  exit 4
+fi
 
 SHORT_SHA="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || printf local)"
 IPA_PATH="${OUTPUT_DIR}/DuoRDP-${SHORT_SHA}.ipa"
