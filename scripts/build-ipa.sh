@@ -53,7 +53,7 @@ if ! cmake --build "${BUILD_DIR}" --config Release --parallel 3 2>&1 | tee "${BU
     escaped="${escaped//$'\r'/'%0D'}"
     escaped="${escaped//$'\n'/'%0A'}"
     echo "::error title=DuoRDP Xcode error::${escaped}"
-  done < <(tail -n 9 "${BUILD_LOG}")
+  done < <(grep -E -i 'CMake Error|Could NOT find|not found|No package|configure: error|error:|fatal error:' "${BUILD_LOG}" | tail -n 9)
   echo "::endgroup::"
   exit 65
 fi
