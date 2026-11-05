@@ -41,6 +41,34 @@ if [[ -z "${APP_PATH}" ]]; then
   exit 2
 fi
 
+OPENSSL_BUILD_LIB_DIR="${BUILD_DIR}/deps/Frameworks"
+APP_FRAMEWORKS_DIR="${APP_PATH}/Frameworks"
+mkdir -p "${APP_FRAMEWORKS_DIR}"
+while IFS= read -r openssl_library; do
+  cp -L "${openssl_library}" "${APP_FRAMEWORKS_DIR}/$(basename "${openssl_library}")"
+done < <(
+  find -L "${OPENSSL_BUILD_LIB_DIR}" -maxdepth 1 -type f \
+    \( -name 'libssl*.dylib' -o -name 'libcrypto*.dylib' \) -print | sort -u
+)
+
+while IFS= read -r openssl_library; do
+  install_name_tool -id "@rpath/$(basename "${openssl_library}")" "${openssl_library}"
+done < <(
+  find "${APP_FRAMEWORKS_DIR}" -maxdepth 1 -type f \
+    \( -name 'libssl*.dylib' -o -name 'libcrypto*.dylib' \) -print
+)
+
+while IFS= read -r binary; do
+  while IFS= read -r dependency; do
+    case "${dependency}" in
+      */libssl*.dylib|*/libcrypto*.dylib)
+        library_name="$(basename "${dependency}")"
+        install_name_tool -change "${dependency}" "@rpath/${library_name}" "${binary}"
+        ;;
+    esac
+  done < <(otool -L "${binary}" | tail -n +2 | awk '{print $1}')
+done < <(printf '%s\n' "${APP_PATH}/iFreeRDP"; find "${APP_FRAMEWORKS_DIR}" -type f -name '*.dylib' -print)
+
 DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(d["udid"] for devices in data["devices"].values() for d in devices if d["name"] == "iPhone Duo" and d["isAvailable"]))')"
 cleanup() {
   xcrun simctl shutdown "${DEVICE_ID}" >/dev/null 2>&1 || true

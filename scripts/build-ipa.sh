@@ -81,6 +81,59 @@ EXECUTABLE_NAME="$(plutil -extract CFBundleExecutable raw \
 APP_DIR="${PACKAGE_DIR}/Payload/DuoRDP.app"
 lipo -info "${APP_DIR}/${EXECUTABLE_NAME}"
 
+# OpenSSL's own build system records an absolute install name even though the
+# surrounding CMake build uses @rpath.  That path points into the GitHub runner
+# and makes dyld terminate the sideloaded app before main() is reached.  Embed
+# the versioned OpenSSL libraries and rewrite every reference to the app rpath.
+OPENSSL_BUILD_LIB_DIR="${BUILD_DIR}/deps/Frameworks"
+APP_FRAMEWORKS_DIR="${APP_DIR}/Frameworks"
+mkdir -p "${APP_FRAMEWORKS_DIR}"
+
+openssl_library_count=0
+while IFS= read -r openssl_library; do
+  cp -L "${openssl_library}" "${APP_FRAMEWORKS_DIR}/$(basename "${openssl_library}")"
+  openssl_library_count=$((openssl_library_count + 1))
+done < <(
+  find -L "${OPENSSL_BUILD_LIB_DIR}" -maxdepth 1 -type f \
+    \( -name 'libssl*.dylib' -o -name 'libcrypto*.dylib' \) -print | sort -u
+)
+
+if [[ "${openssl_library_count}" -eq 0 ]]; then
+  echo "::error title=OpenSSL packaging failed::No OpenSSL dylibs were found in ${OPENSSL_BUILD_LIB_DIR}"
+  exit 4
+fi
+
+while IFS= read -r openssl_library; do
+  install_name_tool -id "@rpath/$(basename "${openssl_library}")" "${openssl_library}"
+done < <(
+  find "${APP_FRAMEWORKS_DIR}" -maxdepth 1 -type f \
+    \( -name 'libssl*.dylib' -o -name 'libcrypto*.dylib' \) -print
+)
+
+rewrite_openssl_dependencies() {
+  local binary="$1"
+  local dependency
+  local library_name
+
+  while IFS= read -r dependency; do
+    case "${dependency}" in
+      */libssl*.dylib|*/libcrypto*.dylib)
+        library_name="$(basename "${dependency}")"
+        if [[ ! -e "${APP_FRAMEWORKS_DIR}/${library_name}" ]]; then
+          echo "::error title=OpenSSL packaging failed::Missing ${library_name} required by ${binary}"
+          exit 4
+        fi
+        install_name_tool -change "${dependency}" "@rpath/${library_name}" "${binary}"
+        ;;
+    esac
+  done < <(otool -L "${binary}" | tail -n +2 | awk '{print $1}')
+}
+
+rewrite_openssl_dependencies "${APP_DIR}/${EXECUTABLE_NAME}"
+while IFS= read -r dylib; do
+  rewrite_openssl_dependencies "${dylib}"
+done < <(find "${APP_FRAMEWORKS_DIR}" -type f -name '*.dylib' -print)
+
 missing_dependency=0
 validate_macho_dependencies() {
   local binary="$1"
