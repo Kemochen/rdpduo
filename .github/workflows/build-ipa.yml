@@ -45,6 +45,15 @@ jobs:
           DUORDP_BUNDLE_ID: ${{ inputs.bundle_id || 'com.duordp.client' }}
         run: bash scripts/build-ipa.sh
 
+      - name: Upload compiler log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuoRDP-compiler-log
+          path: .build/xcode-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload DuoRDP IPA
         uses: actions/upload-artifact@v4
         with:

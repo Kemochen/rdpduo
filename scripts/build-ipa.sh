@@ -45,7 +45,18 @@ cmake -S "${SOURCE_DIR}/client/iOS" -B "${BUILD_DIR}" \
   -DWITH_URIPARSER=OFF
 
 echo "Building DuoRDP"
-cmake --build "${BUILD_DIR}" --config Release --parallel 3
+BUILD_LOG="${WORK_ROOT}/xcode-build.log"
+if ! cmake --build "${BUILD_DIR}" --config Release --parallel 3 2>&1 | tee "${BUILD_LOG}"; then
+  echo "::group::DuoRDP compiler errors"
+  while IFS= read -r error_line; do
+    escaped="${error_line//'%'/'%25'}"
+    escaped="${escaped//$'\r'/'%0D'}"
+    escaped="${escaped//$'\n'/'%0A'}"
+    echo "::error title=DuoRDP Xcode error::${escaped}"
+  done < <(grep -E -i 'error:|fatal error:|BUILD FAILED|Command .* failed' "${BUILD_LOG}" | tail -n 20)
+  echo "::endgroup::"
+  exit 65
+fi
 
 APP_PATH="$(find "${BUILD_DIR}" -type d -name 'iFreeRDP.app' -path '*Release-iphoneos*' -print -quit)"
 if [[ -z "${APP_PATH}" ]]; then

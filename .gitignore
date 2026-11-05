@@ -1,4 +1,5 @@
 .build/
+.diagnostics/
 .DS_Store
 *.ipa
 *.xcarchive
