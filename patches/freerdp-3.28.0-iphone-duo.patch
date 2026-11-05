@@ -1,0 +1,160 @@
+diff --git a/client/iOS/CMakeLists.txt b/client/iOS/CMakeLists.txt
+index b1cc404..1394616 100644
+--- a/client/iOS/CMakeLists.txt
++++ b/client/iOS/CMakeLists.txt
+@@ -63,7 +63,8 @@ set(CMAKE_XCODE_ATTRIBUTE_SKIP_INSTALL NO CACHE BOOL "project default")
+ set(CMAKE_INSTALL_PATH "/Applications" CACHE STRING "project default")
+ set(CMAKE_XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS YES CACHE BOOL "project default")
+ set(CMAKE_XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks" CACHE STRING "project default")
+-set(CMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.freerdp.ifreerdp" CACHE STRING "project default")
++set(DUORDP_BUNDLE_IDENTIFIER "com.duordp.client" CACHE STRING "DuoRDP bundle identifier")
++set(CMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${DUORDP_BUNDLE_IDENTIFIER}" CACHE STRING "project default")
+ 
+ message("sysroot:    ${CMAKE_SYSROOT}")
+ message("target:     ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
+index b6d378c..17ecab2 100644
+--- a/client/iOS/Controllers/RDPSessionViewController.m
++++ b/client/iOS/Controllers/RDPSessionViewController.m
+@@ -11,6 +11,9 @@
+ #import <QuartzCore/QuartzCore.h>
+ #import <GameController/GameController.h>
+ #import <objc/runtime.h>
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
++#import <UIKit/UIViewReservedRegion.h>
++#endif
+ #import "RDPSessionViewController.h"
+ #import "RDPSessionToolbar.h"
+ #import "RDPKeyboard.h"
+@@ -39,6 +42,7 @@
+ - (void)moveCursorByViewportDelta:(CGPoint)delta;
+ - (void)moveCursorToSessionViewPosition:(CGPoint)position;
+ - (void)sendMouseButtonEvent:(int)event;
++- (CGRect)duoViewportFrame;
+ @end
+ 
+ @implementation RDPSessionViewController
+@@ -123,8 +127,12 @@
+ {
+ 	[super viewDidLayoutSubviews];
+ 
+-	CGRect viewportFrame = [[self view] bounds];
++	CGRect viewportFrame = [self duoViewportFrame];
+ 	[_session_scrollview setFrame:viewportFrame];
++	CGFloat toolbarY = _session_toolbar_visible ? CGRectGetMinY(viewportFrame)
++	                                           : CGRectGetMinY(viewportFrame) - TOOLBAR_HEIGHT;
++	[_session_toolbar setFrame:CGRectMake(CGRectGetMinX(viewportFrame), toolbarY,
++	                                     CGRectGetWidth(viewportFrame), TOOLBAR_HEIGHT)];
+ 
+ 	CGSize viewportSize = [_session_scrollview bounds].size;
+ 	if (!CGSizeEqualToSize(viewportSize, _last_session_viewport_size))
+@@ -961,6 +969,56 @@
+ #pragma mark -
+ #pragma mark Helper functions
+ 
++- (CGRect)duoViewportFrame
++{
++	UIView *rootView = [self view];
++	CGRect viewport = [[rootView safeAreaLayoutGuide] layoutFrame];
++	if (CGRectIsEmpty(viewport))
++		viewport = [rootView bounds];
++
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
++	if (@available(iOS 27.1, *))
++	{
++		NSArray<UIViewReservedRegion *> *regions =
++		    [rootView reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]];
++		for (UIViewReservedRegion *region in regions)
++		{
++			if (![region isActive])
++				continue;
++
++			CGRect fold = CGRectIntersection([region frame], viewport);
++			if (CGRectIsNull(fold) || CGRectIsEmpty(fold))
++				continue;
++
++			if (CGRectGetHeight(fold) >= CGRectGetWidth(fold))
++			{
++				CGRect leading = CGRectMake(CGRectGetMinX(viewport), CGRectGetMinY(viewport),
++				                            MAX(0.0, CGRectGetMinX(fold) - CGRectGetMinX(viewport)),
++				                            CGRectGetHeight(viewport));
++				CGRect trailing = CGRectMake(CGRectGetMaxX(fold), CGRectGetMinY(viewport),
++				                             MAX(0.0, CGRectGetMaxX(viewport) - CGRectGetMaxX(fold)),
++				                             CGRectGetHeight(viewport));
++				viewport = CGRectGetWidth(trailing) >= CGRectGetWidth(leading) ? trailing : leading;
++			}
++			else
++			{
++				CGRect upper = CGRectMake(CGRectGetMinX(viewport), CGRectGetMinY(viewport),
++				                          CGRectGetWidth(viewport),
++				                          MAX(0.0, CGRectGetMinY(fold) - CGRectGetMinY(viewport)));
++				CGRect lower = CGRectMake(CGRectGetMinX(viewport), CGRectGetMaxY(fold),
++				                          CGRectGetWidth(viewport),
++				                          MAX(0.0, CGRectGetMaxY(viewport) - CGRectGetMaxY(fold)));
++				// In laptop posture the remote desktop belongs above the fold. Fall back to
++				// the lower region only if the upper region is not usable.
++				viewport = CGRectGetHeight(upper) > TOOLBAR_HEIGHT ? upper : lower;
++			}
++		}
++	}
++#endif
++
++	return viewport;
++}
++
+ - (void)fitSessionViewToViewport
+ {
+ 	CGSize viewportSize = [_session_scrollview bounds].size;
+@@ -1005,15 +1063,15 @@
+ 	// Offset by the safe-area insets so the toolbar/buttons are not hidden behind
+ 	// the status bar / notch / Dynamic Island on modern devices (and side notch
+ 	// in landscape).
+-	UIEdgeInsets safe = [[self view] safeAreaInsets];
+-	CGFloat toolbarWidth = [[self view] bounds].size.width - safe.left - safe.right;
++	CGRect viewport = [self duoViewportFrame];
+ 
+ 	if (show)
+ 	{
+ 		[UIView beginAnimations:@"showToolbar" context:nil];
+ 		[UIView setAnimationDuration:.4];
+ 		[UIView setAnimationCurve:UIViewAnimationCurveLinear];
+-		[_session_toolbar setFrame:CGRectMake(safe.left, safe.top, toolbarWidth, TOOLBAR_HEIGHT)];
++		[_session_toolbar setFrame:CGRectMake(CGRectGetMinX(viewport), CGRectGetMinY(viewport),
++		                                     CGRectGetWidth(viewport), TOOLBAR_HEIGHT)];
+ 		[UIView commitAnimations];
+ 		_session_toolbar_visible = YES;
+ 	}
+@@ -1022,8 +1080,9 @@
+ 		[UIView beginAnimations:@"hideToolbar" context:nil];
+ 		[UIView setAnimationDuration:.4];
+ 		[UIView setAnimationCurve:UIViewAnimationCurveLinear];
+-		[_session_toolbar
+-		    setFrame:CGRectMake(safe.left, -TOOLBAR_HEIGHT, toolbarWidth, TOOLBAR_HEIGHT)];
++		[_session_toolbar setFrame:CGRectMake(CGRectGetMinX(viewport),
++		                                     CGRectGetMinY(viewport) - TOOLBAR_HEIGHT,
++		                                     CGRectGetWidth(viewport), TOOLBAR_HEIGHT)];
+ 		[UIView commitAnimations];
+ 		_session_toolbar_visible = NO;
+ 	}
+diff --git a/client/iOS/iFreeRDP.plist b/client/iOS/iFreeRDP.plist
+index dc2e883..0a3d759 100644
+--- a/client/iOS/iFreeRDP.plist
++++ b/client/iOS/iFreeRDP.plist
+@@ -5,7 +5,7 @@
+ 	<key>CFBundleDevelopmentRegion</key>
+ 	<string>English</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>iFreeRDP</string>
++	<string>DuoRDP</string>
+ 	<key>CFBundleExecutable</key>
+ 	<string>$(EXECUTABLE_NAME)</string>
+ 	<key>CFBundleIconFiles</key>
+@@ -31,6 +31,8 @@
+ 	<string>1</string>
+ 	<key>LSRequiresIPhoneOS</key>
+ 	<true/>
++	<key>UIApplicationSupportsIndirectInputEvents</key>
++	<true/>
+ 	<key>UIApplicationSceneManifest</key>
+ 	<dict>
+ 		<key>UIApplicationSupportsMultipleScenes</key>

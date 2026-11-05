@@ -1,0 +1,55 @@
+name: Build DuoRDP IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: Bundle identifier used before AltStore re-signs the app
+        required: true
+        default: com.duordp.client
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-ipa.yml
+      - patches/**
+      - scripts/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unsigned device IPA
+    runs-on: xcode-27
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out DuoRDP
+        uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          python3 -c 'import sys; assert tuple(map(int, sys.argv[1].split(".")[:2])) >= (27, 1)' "$(xcrun --sdk iphoneos --show-sdk-version)"
+          cmake --version
+          clang --version
+
+      - name: Install build requirement
+        run: command -v pkg-config >/dev/null 2>&1 || brew install pkgconf
+
+      - name: Build unsigned IPA
+        id: package
+        env:
+          DUORDP_BUNDLE_ID: ${{ inputs.bundle_id || 'com.duordp.client' }}
+        run: bash scripts/build-ipa.sh
+
+      - name: Upload DuoRDP IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DuoRDP-unsigned-ipa
+          path: ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
