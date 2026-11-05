@@ -1,0 +1,49 @@
+diff --git a/client/iOS/Controllers/BookmarkListController.m b/client/iOS/Controllers/BookmarkListController.m
+index d928a4d..150c57b 100644
+--- a/client/iOS/Controllers/BookmarkListController.m
++++ b/client/iOS/Controllers/BookmarkListController.m
+@@ -25,6 +25,7 @@
+ #pragma mark misc functions
+ - (UIButton *)disclosureButtonWithImage:(UIImage *)image;
+ - (void)performSearch:(NSString *)searchText;
++- (void)handleSelectionAtIndexPath:(NSIndexPath *)indexPath;
+ #pragma mark Persisting bookmarks
+ - (void)scheduleWriteBookmarksToDataStore;
+ - (void)writeBookmarksToDataStore;
+@@ -147,11 +148,17 @@
+ - (void)viewWillDisappear:(BOOL)animated
+ {
+ 	[super viewWillDisappear:animated];
++	[_searchBar resignFirstResponder];
++}
+ 
+-	// clear any search
++- (void)viewDidDisappear:(BOOL)animated
++{
++	[super viewDidDisappear:animated];
++
++	// Do not mutate the table's backing data while UIKit is still completing a row selection.
+ 	[_searchBar setText:@""];
+-	[_searchBar resignFirstResponder];
+ 	[self performSearch:@""];
++	[_tableView reloadData];
+ }
+ 
+ // Override to allow orientations other than the default portrait orientation.
+@@ -516,6 +523,16 @@
+ }
+ 
+ - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
++{
++	// iOS 27 completes selection bookkeeping after this delegate callback.  Pushing a
++	// controller synchronously can remove the cell first and make UIKit insert nil.
++	[tableView deselectRowAtIndexPath:indexPath animated:NO];
++	[self performSelector:@selector(handleSelectionAtIndexPath:)
++	           withObject:indexPath
++	           afterDelay:0.0];
++}
++
++- (void)handleSelectionAtIndexPath:(NSIndexPath *)indexPath
+ {
+ 	if ([indexPath section] == SECTION_SESSIONS)
+ 	{
