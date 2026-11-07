@@ -8,7 +8,13 @@ DuoRDP 是一个面向 iPhone Duo 的 RDP 客户端构建项目。它固定使�
 - Metal 远程桌面渲染、触摸输入、软键盘及外接键鼠。
 - 支持 iPhone 横竖屏、外屏和完全展开的内屏尺寸变化。
 - iOS 27.1 及以上使用 `UIViewReservedRegion` 检测活动折痕。
-- 书本姿态选择折痕一侧显示桌面；笔记本姿态优先在折痕上方显示桌面。
+- 完全展开或竖向折叠时使用整个应用窗口；横向折叠时上屏显示远程桌面、下屏作为触控板。
+- 触控板支持移动、单击、右击、滚动和按住拖动。
+- 横向折叠时，下屏快捷栏提供键盘、Windows 键、Ctrl+Alt+Del、Fit/Fill、缩放和断开操作。
+- 自动分辨率连接会通过 FreeRDP 显示控制通道跟随折叠、展开与旋转后的桌面区域变化。
+- Fit/Fill 可在完整显示与铺满裁切之间切换；默认 Fill，用于消除比例不一致时的黑边。
+- 每个连接可选择远程分辨率与 100%/125%/150%/200% 本地显示比例。
+- 保存的连接提供明确的 **Edit** 入口，可保存用户名、密码和域；登录时输入的新凭据也会回写到书签。
 - GitHub Actions 在 arm64 iOS Device 模式下打包未签名 IPA，不需要把证书上传到 GitHub。
 
 应用最低部署版本是 iOS 15；iPhone Duo 专用折叠适配仅在 iOS 27.1 及以上启用。
@@ -36,7 +42,6 @@ DuoRDP 是一个面向 iPhone Duo 的 RDP 客户端构建项目。它固定使�
 ## 第一版限制
 
 - 为降低 GitHub 构建时间和故障率，工作流暂时关闭 FFmpeg、OpenH264、Opus、Azure 登录和额外图片编解码器。普通 Windows RDP 会协商到基础图形通道。
-- 折叠时目前把远程桌面限制在一个可用区域；另一侧触摸板/快捷键控制面板属于下一阶段。
 - 此 Windows 工作区无法运行 Xcode 或 iPhone Duo 模拟器。最终编译和设备级验证由 GitHub 的 `xcode-27` runner 以及你的真机完成。
 - 请只连接你拥有或获准管理的计算机。
 
@@ -45,6 +50,8 @@ DuoRDP 是一个面向 iPhone Duo 的 RDP 客户端构建项目。它固定使�
 - `.github/workflows/build-ipa.yml`：GitHub Actions IPA 构建工作流。
 - `scripts/build-ipa.sh`：下载、配置、编译和打包脚本。
 - `patches/freerdp-3.28.0-iphone-duo.patch`：Duo 布局、应用名称和 Bundle ID 定制。
+- `patches/freerdp-3.28.0-duo-productivity.patch`：全屏、下屏触控板、显示比例和凭据编辑增强。
+- `patches/freerdp-3.28.0-duo-controls.patch`：动态分辨率、Fit/Fill 和下屏快捷控制栏。
 
 ## 上游与许可证
 

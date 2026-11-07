@@ -1,0 +1,569 @@
+diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
+index 4a3a358..15c399b 100644
+--- a/client/iOS/Controllers/RDPSessionViewController.h
++++ b/client/iOS/Controllers/RDPSessionViewController.h
+@@ -67,8 +67,13 @@
+ 
+ 	// iPhone Duo laptop posture: remote desktop above the fold, touchpad below it.
+ 	UIView *_duo_trackpad_view;
++	UIView *_duo_trackpad_surface_view;
++	UIScrollView *_duo_shortcut_bar;
++	UIButton *_duo_fit_fill_button;
+ 	CGPoint _duo_trackpad_last_location;
+ 	BOOL _duo_trackpad_drag_active;
++	BOOL _duo_fill_mode;
++	CGSize _last_dynamic_resolution_size;
+ }
+ 
+ - (id)initWithNibName:(NSString *)nibNameOrNil
+diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
+index c1967c6..3db03f1 100644
+--- a/client/iOS/Controllers/RDPSessionViewController.m
++++ b/client/iOS/Controllers/RDPSessionViewController.m
+@@ -20,6 +20,8 @@
+ #import "Utils.h"
+ #import "Toast+UIView.h"
+ #import "ConnectionParams.h"
++#import "Bookmark.h"
++#import "TSXTypes.h"
+ #import "CredentialsInputController.h"
+ #import "VerifyCertificateController.h"
+ #import "BlockAlertView.h"
+@@ -46,6 +48,15 @@
+ - (CGRect)duoTrackpadFrame;
+ - (BOOL)duoLaptopDesktopFrame:(CGRect *)desktopFrame trackpadFrame:(CGRect *)trackpadFrame;
+ - (void)configureDuoTrackpad;
++- (UIButton *)duoShortcutButtonWithTitle:(NSString *)title action:(SEL)action width:(CGFloat)width;
++- (void)requestDuoDynamicResolution;
++- (void)duoKeyboardPressed:(id)sender;
++- (void)duoWindowsPressed:(id)sender;
++- (void)duoCtrlAltDeletePressed:(id)sender;
++- (void)duoFitFillPressed:(id)sender;
++- (void)duoZoomOutPressed:(id)sender;
++- (void)duoZoomInPressed:(id)sender;
++- (void)duoDisconnectPressed:(id)sender;
+ - (void)handleDuoTrackpadPan:(UIPanGestureRecognizer *)gesture;
+ - (void)handleDuoTrackpadTap:(UITapGestureRecognizer *)gesture;
+ - (void)handleDuoTrackpadSecondaryTap:(UITapGestureRecognizer *)gesture;
+@@ -84,8 +95,14 @@
+ 		_mouse_drag_active = NO;
+ 		_pointer_is_indirect = NO;
+ 		_duo_trackpad_view = nil;
++		_duo_trackpad_surface_view = nil;
++		_duo_shortcut_bar = nil;
++		_duo_fit_fill_button = nil;
+ 		_duo_trackpad_last_location = CGPointZero;
+ 		_duo_trackpad_drag_active = NO;
++		_duo_fill_mode = ![[session params] hasValueForKey:@"display_fill_mode"] ||
++		                 [[session params] boolForKey:@"display_fill_mode"];
++		_last_dynamic_resolution_size = CGSizeZero;
+ 
+ 		[UIView setAnimationDelegate:self];
+ 		[UIView setAnimationDidStopSelector:@selector(animationStopped:finished:context:)];
+@@ -144,6 +161,15 @@
+ 	CGRect trackpadFrame = [self duoTrackpadFrame];
+ 	[_duo_trackpad_view setFrame:trackpadFrame];
+ 	[_duo_trackpad_view setHidden:CGRectIsEmpty(trackpadFrame)];
++	if (!CGRectIsEmpty(trackpadFrame))
++	{
++		CGRect localBounds = [_duo_trackpad_view bounds];
++		CGFloat barHeight = MIN(52.0, MAX(44.0, CGRectGetHeight(localBounds) * 0.18));
++		[_duo_shortcut_bar setFrame:CGRectMake(0.0, 0.0, CGRectGetWidth(localBounds), barHeight)];
++		[_duo_trackpad_surface_view
++		    setFrame:CGRectMake(0.0, barHeight, CGRectGetWidth(localBounds),
++		                         MAX(0.0, CGRectGetHeight(localBounds) - barHeight))];
++	}
+ 	if (!CGRectIsEmpty(trackpadFrame))
+ 		[[self view] bringSubviewToFront:_duo_trackpad_view];
+ 	CGFloat toolbarY = _session_toolbar_visible ? CGRectGetMinY(viewportFrame)
+@@ -153,7 +179,15 @@
+ 
+ 	CGSize viewportSize = [_session_scrollview bounds].size;
+ 	if (!CGSizeEqualToSize(viewportSize, _last_session_viewport_size))
++	{
+ 		[self fitSessionViewToViewport];
++		[NSObject cancelPreviousPerformRequestsWithTarget:self
++		                                           selector:@selector(requestDuoDynamicResolution)
++		                                             object:nil];
++		[self performSelector:@selector(requestDuoDynamicResolution)
++		           withObject:nil
++		           afterDelay:0.35];
++	}
+ 	else
+ 		[self centerSessionViewInViewport];
+ }
+@@ -272,6 +306,7 @@
+ 
+ - (void)dealloc
+ {
++	[NSObject cancelPreviousPerformRequestsWithTarget:self];
+ 	// remove any observers
+ 	[[NSNotificationCenter defaultCenter] removeObserver:self];
+ 
+@@ -280,6 +315,9 @@
+ 
+ 	[_advanced_keyboard_view release];
+ 	[_keyboard_toolbar release];
++	[_duo_fit_fill_button release];
++	[_duo_shortcut_bar release];
++	[_duo_trackpad_surface_view release];
+ 	[_duo_trackpad_view release];
+ 	[_session release];
+ 	[super dealloc];
+@@ -486,6 +524,10 @@
+ 		                               width, height, depth];
+ 		[[self view] makeToast:message duration:ToastDurationNormal position:@"bottom"];
+ 	}
++
++	[self performSelector:@selector(requestDuoDynamicResolution)
++	           withObject:nil
++	           afterDelay:0.35];
+ }
+ 
+ - (void)sessionWillDisconnect:(RDPSession *)session
+@@ -1072,16 +1114,61 @@
+ 	[[_duo_trackpad_view layer] setBorderWidth:1.0];
+ 	[_duo_trackpad_view setHidden:YES];
+ 
++	_duo_shortcut_bar = [[UIScrollView alloc] initWithFrame:CGRectZero];
++	[_duo_shortcut_bar setBackgroundColor:[UIColor colorWithWhite:0.12 alpha:1.0]];
++	[_duo_shortcut_bar setShowsHorizontalScrollIndicator:NO];
++	[_duo_shortcut_bar setAlwaysBounceHorizontal:YES];
++	[_duo_trackpad_view addSubview:_duo_shortcut_bar];
++
++	NSArray *buttons = [NSArray
++	    arrayWithObjects:[self duoShortcutButtonWithTitle:NSLocalizedString(@"Keyboard", nil)
++	                                                   action:@selector(duoKeyboardPressed:)
++	                                                    width:78.0],
++	                     [self duoShortcutButtonWithTitle:@"Win"
++	                                                   action:@selector(duoWindowsPressed:)
++	                                                    width:48.0],
++	                     [self duoShortcutButtonWithTitle:@"Ctrl+Alt+Del"
++	                                                   action:@selector(duoCtrlAltDeletePressed:)
++	                                                    width:96.0],
++	                     [self duoShortcutButtonWithTitle:(_duo_fill_mode ? @"Fill" : @"Fit")
++	                                                   action:@selector(duoFitFillPressed:)
++	                                                    width:54.0],
++	                     [self duoShortcutButtonWithTitle:@"−"
++	                                                   action:@selector(duoZoomOutPressed:)
++	                                                    width:42.0],
++	                     [self duoShortcutButtonWithTitle:@"+"
++	                                                   action:@selector(duoZoomInPressed:)
++	                                                    width:42.0],
++	                     [self duoShortcutButtonWithTitle:NSLocalizedString(@"Disconnect", nil)
++	                                                   action:@selector(duoDisconnectPressed:)
++	                                                    width:82.0], nil];
++	_duo_fit_fill_button = [[buttons objectAtIndex:3] retain];
++	CGFloat buttonX = 8.0;
++	for (UIButton *button in buttons)
++	{
++		CGRect frame = [button frame];
++		frame.origin = CGPointMake(buttonX, 6.0);
++		frame.size.height = 36.0;
++		[button setFrame:frame];
++		[_duo_shortcut_bar addSubview:button];
++		buttonX = CGRectGetMaxX(frame) + 6.0;
++	}
++	[_duo_shortcut_bar setContentSize:CGSizeMake(buttonX + 2.0, 48.0)];
++
++	_duo_trackpad_surface_view = [[UIView alloc] initWithFrame:CGRectZero];
++	[_duo_trackpad_surface_view setBackgroundColor:[UIColor clearColor]];
++	[_duo_trackpad_view addSubview:_duo_trackpad_surface_view];
++
+ 	UILabel *label = [[[UILabel alloc] initWithFrame:CGRectZero] autorelease];
+ 	[label setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
+-	[label setFrame:[_duo_trackpad_view bounds]];
++	[label setFrame:[_duo_trackpad_surface_view bounds]];
+ 	[label setText:NSLocalizedString(@"Touchpad\nTap: click  •  Two-finger tap: right click\nTwo-finger swipe: scroll  •  Hold and move: drag",
+ 	                               @"iPhone Duo touchpad instructions")];
+ 	[label setNumberOfLines:3];
+ 	[label setTextAlignment:NSTextAlignmentCenter];
+ 	[label setTextColor:[UIColor colorWithWhite:0.72 alpha:1.0]];
+ 	[label setFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium]];
+-	[_duo_trackpad_view addSubview:label];
++	[_duo_trackpad_surface_view addSubview:label];
+ 
+ 	UITapGestureRecognizer *tap = [[[UITapGestureRecognizer alloc]
+ 	    initWithTarget:self
+@@ -1107,13 +1194,98 @@
+ 	[pan setDelegate:self];
+ 	[hold setDelegate:self];
+ 
+-	[_duo_trackpad_view addGestureRecognizer:tap];
+-	[_duo_trackpad_view addGestureRecognizer:secondaryTap];
+-	[_duo_trackpad_view addGestureRecognizer:pan];
+-	[_duo_trackpad_view addGestureRecognizer:scroll];
+-	[_duo_trackpad_view addGestureRecognizer:hold];
++	[_duo_trackpad_surface_view addGestureRecognizer:tap];
++	[_duo_trackpad_surface_view addGestureRecognizer:secondaryTap];
++	[_duo_trackpad_surface_view addGestureRecognizer:pan];
++	[_duo_trackpad_surface_view addGestureRecognizer:scroll];
++	[_duo_trackpad_surface_view addGestureRecognizer:hold];
+ 	[[self view] addSubview:_duo_trackpad_view];
+-	[label setFrame:[_duo_trackpad_view bounds]];
++	[label setFrame:[_duo_trackpad_surface_view bounds]];
++}
++
++- (UIButton *)duoShortcutButtonWithTitle:(NSString *)title action:(SEL)action width:(CGFloat)width
++{
++	UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++	[button setFrame:CGRectMake(0.0, 0.0, width, 36.0)];
++	[button setTitle:title forState:UIControlStateNormal];
++	[button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
++	[[button titleLabel] setFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold]];
++	[[button layer] setCornerRadius:8.0];
++	[button setBackgroundColor:[UIColor colorWithWhite:0.24 alpha:1.0]];
++	[button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
++	return button;
++}
++
++- (void)requestDuoDynamicResolution
++{
++	if ([[_session params] intForKey:@"screen_resolution_type"] != TSXScreenOptionFitScreen)
++		return;
++
++	CGSize size = [self sizeForFitScreenForSession:_session];
++	rdpSettings *settings = [_session getSessionParams];
++	CGSize current = CGSizeMake(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
++	                            freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
++	if (CGSizeEqualToSize(size, current) || CGSizeEqualToSize(size, _last_dynamic_resolution_size))
++		return;
++
++	if ([_session requestDesktopSize:size])
++		_last_dynamic_resolution_size = size;
++}
++
++- (void)duoKeyboardPressed:(id)sender
++{
++	(void)sender;
++	[self toggleKeyboard:nil];
++}
++
++- (void)duoWindowsPressed:(id)sender
++{
++	(void)sender;
++	RDPKeyboard *keyboard = [RDPKeyboard getSharedRDPKeyboard];
++	[keyboard toggleWinKey];
++	[keyboard toggleWinKey];
++}
++
++- (void)duoCtrlAltDeletePressed:(id)sender
++{
++	(void)sender;
++	[[RDPKeyboard getSharedRDPKeyboard] sendCtrlAltDeleteKeyStroke];
++}
++
++- (void)duoFitFillPressed:(id)sender
++{
++	(void)sender;
++	_duo_fill_mode = !_duo_fill_mode;
++	[_duo_fit_fill_button setTitle:(_duo_fill_mode ? @"Fill" : @"Fit")
++	                          forState:UIControlStateNormal];
++	[[_session params] setBool:_duo_fill_mode forKey:@"display_fill_mode"];
++	[[[_session bookmark] params] setBool:_duo_fill_mode forKey:@"display_fill_mode"];
++	[[NSNotificationCenter defaultCenter]
++	    postNotificationName:@"DuoCredentialsDidUpdateNotification"
++	                  object:[_session bookmark]];
++	[self fitSessionViewToViewport];
++}
++
++- (void)duoZoomOutPressed:(id)sender
++{
++	(void)sender;
++	CGFloat target = MAX([_session_scrollview minimumZoomScale],
++	                     [_session_scrollview zoomScale] / 1.25f);
++	[_session_scrollview setZoomScale:target animated:YES];
++}
++
++- (void)duoZoomInPressed:(id)sender
++{
++	(void)sender;
++	CGFloat target = MIN([_session_scrollview maximumZoomScale],
++	                     [_session_scrollview zoomScale] * 1.25f);
++	[_session_scrollview setZoomScale:target animated:YES];
++}
++
++- (void)duoDisconnectPressed:(id)sender
++{
++	(void)sender;
++	[self disconnectSession:nil];
+ }
+ 
+ - (void)handleDuoTrackpadPan:(UIPanGestureRecognizer *)gesture
+@@ -1182,16 +1354,28 @@
+ 
+ 	CGFloat fitScale =
+ 	    MIN(viewportSize.width / remoteSize.width, viewportSize.height / remoteSize.height);
++	CGFloat baseScale = _duo_fill_mode
++	                        ? MAX(viewportSize.width / remoteSize.width,
++	                              viewportSize.height / remoteSize.height)
++	                        : fitScale;
+ 	NSInteger displayScalePercent = [[_session params] intForKey:@"display_scale_percent"];
+ 	if (displayScalePercent < 100 || displayScalePercent > 200)
+ 		displayScalePercent = 100;
+-	CGFloat requestedScale = fitScale * ((CGFloat)displayScalePercent / 100.0f);
++	CGFloat requestedScale = baseScale * ((CGFloat)displayScalePercent / 100.0f);
+ 	[_session_scrollview setMinimumZoomScale:fitScale];
+-	[_session_scrollview setMaximumZoomScale:MAX(3.0f, requestedScale)];
++	[_session_scrollview setMaximumZoomScale:MAX(4.0f, requestedScale * 2.0f)];
+ 	[_session_scrollview setZoomScale:requestedScale animated:NO];
+ 	[_session_scrollview setContentOffset:CGPointZero animated:NO];
+ 	_last_session_viewport_size = viewportSize;
+ 	[self centerSessionViewInViewport];
++	if (_duo_fill_mode)
++	{
++		CGSize contentSize = [_session_scrollview contentSize];
++		[_session_scrollview
++		    setContentOffset:CGPointMake(MAX(0.0f, (contentSize.width - viewportSize.width) * 0.5f),
++		                                 MAX(0.0f, (contentSize.height - viewportSize.height) * 0.5f))
++		             animated:NO];
++	}
+ }
+ 
+ - (void)centerSessionViewInViewport
+diff --git a/client/iOS/Defaults.plist b/client/iOS/Defaults.plist
+index a72f62f..fc5dc09 100644
+--- a/client/iOS/Defaults.plist
++++ b/client/iOS/Defaults.plist
+@@ -18,6 +18,8 @@
+ 		<integer>32</integer>
+ 		<key>display_scale_percent</key>
+ 		<integer>100</integer>
++		<key>display_fill_mode</key>
++		<true/>
+ 		<key>perf_font_smoothing</key>
+ 		<false/>
+ 		<key>perf_menu_animation</key>
+diff --git a/client/iOS/FreeRDP/ios_freerdp.h b/client/iOS/FreeRDP/ios_freerdp.h
+index 1d454f6..79fd175 100644
+--- a/client/iOS/FreeRDP/ios_freerdp.h
++++ b/client/iOS/FreeRDP/ios_freerdp.h
+@@ -16,6 +16,7 @@
+ #import "TSXTypes.h"
+ #import <winpr/clipboard.h>
+ #import <freerdp/client/cliprdr.h>
++#import <freerdp/client/disp.h>
+ 
+ @class RDPSession, RDPSessionView;
+ 
+@@ -38,6 +39,9 @@ typedef struct mf_context
+ 	HANDLE clipboardRequestEvent;
+ 	CLIPRDR_FORMAT *serverFormats;
+ 	CliprdrClientContext *cliprdr;
++	DispClientContext *disp;
++	UINT32 pendingResizeWidth;
++	UINT32 pendingResizeHeight;
+ 	UINT32 clipboardCapabilities;
+ 	WINPR_ATTR_NODISCARD pServerCutText ServerCutText;
+ } mfContext;
+diff --git a/client/iOS/FreeRDP/ios_freerdp.m b/client/iOS/FreeRDP/ios_freerdp.m
+index 75b790b..fb8393d 100644
+--- a/client/iOS/FreeRDP/ios_freerdp.m
++++ b/client/iOS/FreeRDP/ios_freerdp.m
+@@ -33,6 +33,47 @@
+ 
+ #define TAG FREERDP_TAG("iOS")
+ 
++static UINT ios_send_pending_resize(mfContext *afc)
++{
++	if (!afc || !afc->disp || !afc->disp->SendMonitorLayout || afc->pendingResizeWidth < 200 ||
++	    afc->pendingResizeHeight < 200)
++		return CHANNEL_RC_OK;
++
++	rdpSettings *settings = afc->_p.settings;
++	DISPLAY_CONTROL_MONITOR_LAYOUT layout = WINPR_C_ARRAY_INIT;
++	layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
++	layout.Width = afc->pendingResizeWidth;
++	layout.Height = afc->pendingResizeHeight;
++	layout.PhysicalWidth = layout.Width;
++	layout.PhysicalHeight = layout.Height;
++	layout.Orientation = freerdp_settings_get_uint16(settings, FreeRDP_DesktopOrientation);
++	layout.DesktopScaleFactor =
++	    freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
++	layout.DeviceScaleFactor = freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
++	if (layout.DesktopScaleFactor < 100)
++		layout.DesktopScaleFactor = 100;
++	if (layout.DeviceScaleFactor < 100)
++		layout.DeviceScaleFactor = 100;
++
++	UINT rc = afc->disp->SendMonitorLayout(afc->disp, 1, &layout);
++	if (rc == CHANNEL_RC_OK)
++	{
++		afc->pendingResizeWidth = 0;
++		afc->pendingResizeHeight = 0;
++	}
++	return rc;
++}
++
++static UINT ios_display_control_caps(DispClientContext *disp, UINT32 maxNumMonitors,
++	                                 UINT32 maxMonitorAreaFactorA,
++	                                 UINT32 maxMonitorAreaFactorB)
++{
++	(void)maxNumMonitors;
++	(void)maxMonitorAreaFactorA;
++	(void)maxMonitorAreaFactorB;
++	return ios_send_pending_resize((mfContext *)disp->custom);
++}
++
+ typedef struct
+ {
+ 	rdpPointer pointer;
+@@ -72,6 +113,14 @@ static void ios_OnChannelConnectedEventHandler(void *context, const ChannelConne
+ 	{
+ 		ios_cliprdr_init(afc, (CliprdrClientContext *)e->pInterface);
+ 	}
++	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
++	{
++		afc->disp = (DispClientContext *)e->pInterface;
++		afc->disp->custom = afc;
++		afc->disp->DisplayControlCaps = ios_display_control_caps;
++		if (ios_send_pending_resize(afc) != CHANNEL_RC_OK)
++			WLog_WARN(TAG, "Initial dynamic resize request failed");
++	}
+ }
+ 
+ static void ios_OnChannelDisconnectedEventHandler(void *context,
+@@ -106,6 +155,15 @@ static void ios_OnChannelDisconnectedEventHandler(void *context,
+ 	{
+ 		ios_cliprdr_uninit(afc, (CliprdrClientContext *)e->pInterface);
+ 	}
++	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
++	{
++		if (afc->disp)
++		{
++			afc->disp->DisplayControlCaps = nullptr;
++			afc->disp->custom = nullptr;
++		}
++		afc->disp = nullptr;
++	}
+ }
+ 
+ static BOOL ios_pre_connect(freerdp *instance)
+diff --git a/client/iOS/FreeRDP/ios_freerdp_events.m b/client/iOS/FreeRDP/ios_freerdp_events.m
+index 3abbbd1..d2fc287 100644
+--- a/client/iOS/FreeRDP/ios_freerdp_events.m
++++ b/client/iOS/FreeRDP/ios_freerdp_events.m
+@@ -89,6 +89,38 @@ static BOOL ios_events_handle_event(mfInfo *mfi, NSDictionary *event_description
+ 			NSLog(@"%s: doesn't know how to send keyboard input with subtype %@", __func__,
+ 			      [event_description objectForKey:@"subtype"]);
+ 	}
++	else if ([event_type isEqualToString:@"resize"])
++	{
++		mfContext *context = (mfContext *)instance->context;
++		context->pendingResizeWidth =
++		    [[event_description objectForKey:@"width"] unsignedIntValue];
++		context->pendingResizeHeight =
++		    [[event_description objectForKey:@"height"] unsignedIntValue];
++		if (context->disp && context->disp->SendMonitorLayout)
++		{
++			DISPLAY_CONTROL_MONITOR_LAYOUT layout = WINPR_C_ARRAY_INIT;
++			layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
++			layout.Width = context->pendingResizeWidth;
++			layout.Height = context->pendingResizeHeight;
++			layout.PhysicalWidth = layout.Width;
++			layout.PhysicalHeight = layout.Height;
++			layout.Orientation = freerdp_settings_get_uint16(
++			    instance->context->settings, FreeRDP_DesktopOrientation);
++			layout.DesktopScaleFactor = freerdp_settings_get_uint32(
++			    instance->context->settings, FreeRDP_DesktopScaleFactor);
++			layout.DeviceScaleFactor = freerdp_settings_get_uint32(
++			    instance->context->settings, FreeRDP_DeviceScaleFactor);
++			if (layout.DesktopScaleFactor < 100)
++				layout.DesktopScaleFactor = 100;
++			if (layout.DeviceScaleFactor < 100)
++				layout.DeviceScaleFactor = 100;
++			if (context->disp->SendMonitorLayout(context->disp, 1, &layout) == CHANNEL_RC_OK)
++			{
++				context->pendingResizeWidth = 0;
++				context->pendingResizeHeight = 0;
++			}
++		}
++	}
+ 	else if ([event_type isEqualToString:@"disconnect"])
+ 		should_continue = FALSE;
+ 	else
+diff --git a/client/iOS/Models/RDPKeyboard.h b/client/iOS/Models/RDPKeyboard.h
+index 3bcd6cf..2e44ee8 100644
+--- a/client/iOS/Models/RDPKeyboard.h
++++ b/client/iOS/Models/RDPKeyboard.h
+@@ -74,5 +74,6 @@
+ - (void)sendEnterKeyStroke;
+ - (void)sendEscapeKeyStroke;
+ - (void)sendBackspaceKeyStroke;
++- (void)sendCtrlAltDeleteKeyStroke;
+ 
+ @end
+diff --git a/client/iOS/Models/RDPKeyboard.m b/client/iOS/Models/RDPKeyboard.m
+index 6cac343..2bd7241 100644
+--- a/client/iOS/Models/RDPKeyboard.m
++++ b/client/iOS/Models/RDPKeyboard.m
+@@ -241,6 +241,18 @@
+ 	[self sendVirtualKeyCode:VK_BACK];
+ }
+ 
++- (void)sendCtrlAltDeleteKeyStroke
++{
++	// Send a complete chord without leaving any modifier latched in the shared keyboard state.
++	[self reset];
++	[self sendVirtualKey:VK_LCONTROL up:NO];
++	[self sendVirtualKey:VK_LMENU up:NO];
++	[self sendVirtualKey:(VK_DELETE | KBDEXT) up:NO];
++	[self sendVirtualKey:(VK_DELETE | KBDEXT) up:YES];
++	[self sendVirtualKey:VK_LMENU up:YES];
++	[self sendVirtualKey:VK_LCONTROL up:YES];
++}
++
+ @end
+ 
+ #pragma mark -
+diff --git a/client/iOS/Models/RDPSession.h b/client/iOS/Models/RDPSession.h
+index 131fdc1..3359d4b 100644
+--- a/client/iOS/Models/RDPSession.h
++++ b/client/iOS/Models/RDPSession.h
+@@ -99,6 +99,9 @@ extern NSString *TSXSessionDidFailToConnectNotification;
+ // send input event to the server
+ - (void)sendInputEvent:(NSDictionary *)event;
+ 
++// request a new single-monitor desktop size through the display-control channel
++- (BOOL)requestDesktopSize:(CGSize)size;
++
+ // session needs a refresh of its view
+ - (void)setNeedsDisplayInRectAsValue:(NSValue *)rect_value;
+ 
+diff --git a/client/iOS/Models/RDPSession.m b/client/iOS/Models/RDPSession.m
+index d7591c8..c958a0d 100644
+--- a/client/iOS/Models/RDPSession.m
++++ b/client/iOS/Models/RDPSession.m
+@@ -109,6 +109,9 @@ static void freeArguments(int argc, char **argv)
+ 
+ 	if (!addArgument(&argc, &argv, "/relax-order-checks"))
+ 		goto out_free;
++
++	if (!addArgument(&argc, &argv, "/dynamic-resolution"))
++		goto out_free;
+ 	// Screen Size is set on connect (we need a valid delegate in case the user choose an automatic
+ 	// screen size)
+ 
+@@ -387,6 +390,22 @@ out_free:
+ 		ios_events_send([self mfi], eventDescriptor);
+ }
+ 
++- (BOOL)requestDesktopSize:(CGSize)size
++{
++	UINT32 width = (UINT32)size.width;
++	UINT32 height = (UINT32)size.height;
++	if (width < 200 || height < 200 || width > 8192 || height > 8192 ||
++	    [self mfi]->connection_state != TSXConnectionConnected)
++		return NO;
++
++	return ios_events_send(
++	    [self mfi], [NSDictionary dictionaryWithObjectsAndKeys:@"resize", @"type",
++	                                                           [NSNumber numberWithUnsignedInt:width],
++	                                                           @"width",
++	                                                           [NSNumber numberWithUnsignedInt:height],
++	                                                           @"height", nil]);
++}
++
+ #pragma mark -
+ #pragma mark Server events (main thread)
+ 

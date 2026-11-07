@@ -14,6 +14,8 @@ git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-iphone-duo.
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-openssl.patch"
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios27-table-selection.patch"
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-session-init.patch"
+git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-productivity.patch"
+git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-controls.patch"
 
 cmake -S "${SOURCE_DIR}/client/iOS" -B "${BUILD_DIR}" \
   -G Xcode \

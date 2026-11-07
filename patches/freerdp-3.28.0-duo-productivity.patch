@@ -1,0 +1,674 @@
+diff --git a/client/iOS/Controllers/BookmarkEditorController.m b/client/iOS/Controllers/BookmarkEditorController.m
+index de49e3e..ab479cd 100644
+--- a/client/iOS/Controllers/BookmarkEditorController.m
++++ b/client/iOS/Controllers/BookmarkEditorController.m
+@@ -235,10 +235,22 @@
+ 	switch (indexPath.row)
+ 	{
+ 		case 0:
++		{
+ 			[[selCell label]
+-			    setText:NSLocalizedString(@"Credentials", @"'Credentials': Bookmark credentials")];
+-			[[selCell selection] setText:[_params StringForKey:@"username"]];
++			    setText:NSLocalizedString(@"Username & Password",
++			                              @"Bookmark username and password")];
++			NSString *username = [_params StringForKey:@"username"];
++			BOOL hasPassword = [[_params StringForKey:@"password"] length] > 0;
++			NSString *summary = nil;
++			if ([username length] > 0)
++				summary = [NSString stringWithFormat:@"%@ • %@", username,
++				                                       hasPassword ? NSLocalizedString(@"Password saved", @"")
++				                                                   : NSLocalizedString(@"No password", @"")];
++			else
++				summary = NSLocalizedString(@"Tap to set login", @"Empty credentials summary");
++			[[selCell selection] setText:summary];
+ 			break;
++		}
+ 		default:
+ 			NSLog(@"Invalid row index in settings table!");
+ 			break;
+@@ -254,13 +266,17 @@
+ 		{
+ 			EditSelectionTableViewCell *selCell = (EditSelectionTableViewCell *)cell;
+ 			[[selCell label]
+-			    setText:NSLocalizedString(@"Screen", @"'Screen': Bookmark Screen settings")];
++			    setText:NSLocalizedString(@"Resolution & Scale", @"Bookmark screen settings")];
+ 			NSString *resolution = ScreenResolutionDescription(
+ 			    [_params intForKey:@"screen_resolution_type"], [_params intForKey:@"width"],
+ 			    [_params intForKey:@"height"]);
+ 			int colorBits = [_params intForKey:@"colors"];
++			NSInteger scale = [_params intForKey:@"display_scale_percent"];
++			if (scale < 100 || scale > 200)
++				scale = 100;
+ 			[[selCell selection]
+-			    setText:[NSString stringWithFormat:@"%@@%d", resolution, colorBits]];
++			    setText:[NSString stringWithFormat:@"%@@%d • %ld%%", resolution, colorBits,
++			                                       (long)scale]];
+ 			break;
+ 		}
+ 		case 1:
+diff --git a/client/iOS/Controllers/BookmarkListController.m b/client/iOS/Controllers/BookmarkListController.m
+index ec2ff6e..4122645 100644
+--- a/client/iOS/Controllers/BookmarkListController.m
++++ b/client/iOS/Controllers/BookmarkListController.m
+@@ -24,8 +24,10 @@
+ @interface BookmarkListController (Private)
+ #pragma mark misc functions
+ - (UIButton *)disclosureButtonWithImage:(UIImage *)image;
++- (UIButton *)editConnectionButton;
+ - (void)performSearch:(NSString *)searchText;
+ - (void)handleSelectionAtIndexPath:(NSIndexPath *)indexPath;
++- (void)credentialsUpdated:(NSNotification *)notification;
+ #pragma mark Persisting bookmarks
+ - (void)scheduleWriteBookmarksToDataStore;
+ - (void)writeBookmarksToDataStore;
+@@ -67,6 +69,11 @@
+ 		                                         selector:@selector(sessionFailedToConnect:)
+ 		                                             name:TSXSessionDidFailToConnectNotification
+ 		                                           object:nil];
++		[[NSNotificationCenter defaultCenter]
++		    addObserver:self
++		       selector:@selector(credentialsUpdated:)
++		           name:@"DuoCredentialsDidUpdateNotification"
++		         object:nil];
+ 
+ 		// set title and tabbar controller image
+ 		[self setTitle:NSLocalizedString(@"Connections",
+@@ -255,7 +262,7 @@
+ 	if (cell == nil)
+ 	{
+ 		[[NSBundle mainBundle] loadNibNamed:@"BookmarkTableViewCell" owner:self options:nil];
+-		[_bmTableCell setAccessoryView:[self disclosureButtonWithImage:_star_on_img]];
++		[_bmTableCell setAccessoryView:[self editConnectionButton]];
+ 		cell = _bmTableCell;
+ 		_bmTableCell = nil;
+ 	}
+@@ -786,6 +793,13 @@
+ 	              position:@"center"];
+ }
+ 
++- (void)credentialsUpdated:(NSNotification *)notification
++{
++	ComputerBookmark *bookmark = (ComputerBookmark *)[notification object];
++	if (bookmark != nil && [_manual_bookmarks containsObject:bookmark])
++		[self scheduleWriteManualBookmarksToDataStore];
++}
++
+ #pragma mark - Reachability notification
+ - (void)reachabilityChanged:(NSNotification *)notification
+ {
+@@ -855,6 +869,20 @@
+ 	return button;
+ }
+ 
++- (UIButton *)editConnectionButton
++{
++	UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++	[button setFrame:CGRectMake(0, 0, 64, 36)];
++	[button setTitle:NSLocalizedString(@"Edit", @"Edit saved connection button")
++	       forState:UIControlStateNormal];
++	[[button titleLabel] setFont:[UIFont boldSystemFontOfSize:15.0]];
++	[button addTarget:self
++	              action:@selector(accessoryButtonTapped:withEvent:)
++	    forControlEvents:UIControlEventTouchUpInside];
++	[button setAccessibilityLabel:NSLocalizedString(@"Edit connection", @"")];
++	return button;
++}
++
+ - (void)performSearch:(NSString *)searchText
+ {
+ 	[_manual_search_result autorelease];
+diff --git a/client/iOS/Controllers/CredentialsInputController.m b/client/iOS/Controllers/CredentialsInputController.m
+index bd5ecdd..b338deb 100644
+--- a/client/iOS/Controllers/CredentialsInputController.m
++++ b/client/iOS/Controllers/CredentialsInputController.m
+@@ -10,6 +10,8 @@
+ 
+ #import "CredentialsInputController.h"
+ #import "RDPSession.h"
++#import "Bookmark.h"
++#import "ConnectionParams.h"
+ 
+ @interface CredentialsInputController ()
+ - (void)updateScrollViewContentSize;
+@@ -182,6 +184,15 @@
+ 	[_params setValue:[_textfield_domain text] forKey:@"domain"];
+ 	[_params setValue:[NSNumber numberWithBool:YES] forKey:@"result"];
+ 
++	// Keep credentials entered during authentication on the saved bookmark as well.
++	ConnectionParams *savedParams = [[_session bookmark] params];
++	[savedParams setValue:[_textfield_username text] forKey:@"username"];
++	[savedParams setValue:[_textfield_password text] forKey:@"password"];
++	[savedParams setValue:[_textfield_domain text] forKey:@"domain"];
++	[[NSNotificationCenter defaultCenter]
++	    postNotificationName:@"DuoCredentialsDidUpdateNotification"
++	                  object:[_session bookmark]];
++
+ 	// dismiss controller
+ 	[self dismissModalViewControllerAnimated:YES];
+ }
+diff --git a/client/iOS/Controllers/RDPSessionViewController.h b/client/iOS/Controllers/RDPSessionViewController.h
+index c5a018e..4a3a358 100644
+--- a/client/iOS/Controllers/RDPSessionViewController.h
++++ b/client/iOS/Controllers/RDPSessionViewController.h
+@@ -64,6 +64,11 @@
+ 	BOOL _long_press_active;
+ 	BOOL _mouse_drag_active;
+ 	BOOL _pointer_is_indirect;
++
++	// iPhone Duo laptop posture: remote desktop above the fold, touchpad below it.
++	UIView *_duo_trackpad_view;
++	CGPoint _duo_trackpad_last_location;
++	BOOL _duo_trackpad_drag_active;
+ }
+ 
+ - (id)initWithNibName:(NSString *)nibNameOrNil
+diff --git a/client/iOS/Controllers/RDPSessionViewController.m b/client/iOS/Controllers/RDPSessionViewController.m
+index 17ecab2..c1967c6 100644
+--- a/client/iOS/Controllers/RDPSessionViewController.m
++++ b/client/iOS/Controllers/RDPSessionViewController.m
+@@ -43,6 +43,14 @@
+ - (void)moveCursorToSessionViewPosition:(CGPoint)position;
+ - (void)sendMouseButtonEvent:(int)event;
+ - (CGRect)duoViewportFrame;
++- (CGRect)duoTrackpadFrame;
++- (BOOL)duoLaptopDesktopFrame:(CGRect *)desktopFrame trackpadFrame:(CGRect *)trackpadFrame;
++- (void)configureDuoTrackpad;
++- (void)handleDuoTrackpadPan:(UIPanGestureRecognizer *)gesture;
++- (void)handleDuoTrackpadTap:(UITapGestureRecognizer *)gesture;
++- (void)handleDuoTrackpadSecondaryTap:(UITapGestureRecognizer *)gesture;
++- (void)handleDuoTrackpadScroll:(UIPanGestureRecognizer *)gesture;
++- (void)handleDuoTrackpadLongPress:(UILongPressGestureRecognizer *)gesture;
+ @end
+ 
+ @implementation RDPSessionViewController
+@@ -75,6 +83,9 @@
+ 		_long_press_active = NO;
+ 		_mouse_drag_active = NO;
+ 		_pointer_is_indirect = NO;
++		_duo_trackpad_view = nil;
++		_duo_trackpad_last_location = CGPointZero;
++		_duo_trackpad_drag_active = NO;
+ 
+ 		[UIView setAnimationDelegate:self];
+ 		[UIView setAnimationDidStopSelector:@selector(animationStopped:finished:context:)];
+@@ -102,6 +113,7 @@
+ 
+ 	// init gesture recognizers
+ 	[self initGestureRecognizers];
++	[self configureDuoTrackpad];
+ 
+ 	// hide session toolbar
+ 	[_session_toolbar
+@@ -129,6 +141,11 @@
+ 
+ 	CGRect viewportFrame = [self duoViewportFrame];
+ 	[_session_scrollview setFrame:viewportFrame];
++	CGRect trackpadFrame = [self duoTrackpadFrame];
++	[_duo_trackpad_view setFrame:trackpadFrame];
++	[_duo_trackpad_view setHidden:CGRectIsEmpty(trackpadFrame)];
++	if (!CGRectIsEmpty(trackpadFrame))
++		[[self view] bringSubviewToFront:_duo_trackpad_view];
+ 	CGFloat toolbarY = _session_toolbar_visible ? CGRectGetMinY(viewportFrame)
+ 	                                           : CGRectGetMinY(viewportFrame) - TOOLBAR_HEIGHT;
+ 	[_session_toolbar setFrame:CGRectMake(CGRectGetMinX(viewportFrame), toolbarY,
+@@ -151,6 +168,16 @@
+ 	return YES;
+ }
+ 
++- (BOOL)prefersHomeIndicatorAutoHidden
++{
++	return YES;
++}
++
++- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures
++{
++	return UIRectEdgeAll;
++}
++
+ - (UIStatusBarAnimation)preferredStatusBarUpdateAnimation
+ {
+ 	return UIStatusBarAnimationSlide;
+@@ -221,7 +248,10 @@
+ 	[super viewWillDisappear:animated];
+ 	if (_mouse_drag_active)
+ 		[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(NO)];
++	if (_duo_trackpad_drag_active)
++		[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(NO)];
+ 	_mouse_drag_active = NO;
++	_duo_trackpad_drag_active = NO;
+ 	_mouse_pan_active = NO;
+ 	_long_press_active = NO;
+ 
+@@ -250,6 +280,7 @@
+ 
+ 	[_advanced_keyboard_view release];
+ 	[_keyboard_toolbar release];
++	[_duo_trackpad_view release];
+ 	[_session release];
+ 	[super dealloc];
+ }
+@@ -571,16 +602,17 @@
+ 
+ - (CGSize)sizeForFitScreenForSession:(RDPSession *)session
+ {
+-	// set remote resolution that matches the on-screen viewport.
+-	CGSize size = [self view].bounds.size;
+-	UIScreen *screen = [[self view] window] ? [[[self view] window] screen] : [UIScreen mainScreen];
+-	CGFloat scale =
+-	    [screen respondsToSelector:@selector(nativeScale)] ? [screen nativeScale] : [screen scale];
+-	if (scale <= 0.0f)
+-		scale = 1.0f;
+-
+-	size.width = ceilf(size.width * scale);
+-	size.height = ceilf(size.height * scale);
++	(void)session;
++	// Use logical viewport points for the automatic RDP resolution. Using the phone's
++	// 3x native pixel scale creates a very large desktop with unreadably small text.
++	CGSize size = [self duoViewportFrame].size;
++	CGFloat minimumScale = MAX(640.0f / MAX(size.width, 1.0f),
++	                           480.0f / MAX(size.height, 1.0f));
++	if (minimumScale > 1.0f)
++	{
++		size.width *= minimumScale;
++		size.height *= minimumScale;
++	}
+ 
+ 	CGFloat maxDimension = MAX(size.width, size.height);
+ 	if (maxDimension > 4096.0f)
+@@ -592,6 +624,8 @@
+ 
+ 	size.width = MAX(64.0f, size.width);
+ 	size.height = MAX(64.0f, size.height);
++	size.width = floorf(size.width / 2.0f) * 2.0f;
++	size.height = floorf(size.height / 2.0f) * 2.0f;
+ 	return size;
+ }
+ 
+@@ -970,11 +1004,28 @@
+ #pragma mark Helper functions
+ 
+ - (CGRect)duoViewportFrame
++{
++	CGRect desktop = [[self view] bounds];
++	CGRect trackpad = CGRectZero;
++	(void)[self duoLaptopDesktopFrame:&desktop trackpadFrame:&trackpad];
++	return desktop;
++}
++
++- (CGRect)duoTrackpadFrame
++{
++	CGRect desktop = CGRectZero;
++	CGRect trackpad = CGRectZero;
++	return [self duoLaptopDesktopFrame:&desktop trackpadFrame:&trackpad] ? trackpad : CGRectZero;
++}
++
++- (BOOL)duoLaptopDesktopFrame:(CGRect *)desktopFrame trackpadFrame:(CGRect *)trackpadFrame
+ {
+ 	UIView *rootView = [self view];
+-	CGRect viewport = [[rootView safeAreaLayoutGuide] layoutFrame];
+-	if (CGRectIsEmpty(viewport))
+-		viewport = [rootView bounds];
++	CGRect bounds = [rootView bounds];
++	if (desktopFrame)
++		*desktopFrame = bounds;
++	if (trackpadFrame)
++		*trackpadFrame = CGRectZero;
+ 
+ #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270100
+ 	if (@available(iOS 27.1, *))
+@@ -986,37 +1037,139 @@
+ 			if (![region isActive])
+ 				continue;
+ 
+-			CGRect fold = CGRectIntersection([region frame], viewport);
+-			if (CGRectIsNull(fold) || CGRectIsEmpty(fold))
++			CGRect fold = CGRectIntersection([region frame], bounds);
++			if (CGRectIsNull(fold) || CGRectIsEmpty(fold) ||
++			    CGRectGetWidth(fold) < CGRectGetHeight(fold))
+ 				continue;
+ 
+-			if (CGRectGetHeight(fold) >= CGRectGetWidth(fold))
+-			{
+-				CGRect leading = CGRectMake(CGRectGetMinX(viewport), CGRectGetMinY(viewport),
+-				                            MAX(0.0, CGRectGetMinX(fold) - CGRectGetMinX(viewport)),
+-				                            CGRectGetHeight(viewport));
+-				CGRect trailing = CGRectMake(CGRectGetMaxX(fold), CGRectGetMinY(viewport),
+-				                             MAX(0.0, CGRectGetMaxX(viewport) - CGRectGetMaxX(fold)),
+-				                             CGRectGetHeight(viewport));
+-				viewport = CGRectGetWidth(trailing) >= CGRectGetWidth(leading) ? trailing : leading;
+-			}
+-			else
+-			{
+-				CGRect upper = CGRectMake(CGRectGetMinX(viewport), CGRectGetMinY(viewport),
+-				                          CGRectGetWidth(viewport),
+-				                          MAX(0.0, CGRectGetMinY(fold) - CGRectGetMinY(viewport)));
+-				CGRect lower = CGRectMake(CGRectGetMinX(viewport), CGRectGetMaxY(fold),
+-				                          CGRectGetWidth(viewport),
+-				                          MAX(0.0, CGRectGetMaxY(viewport) - CGRectGetMaxY(fold)));
+-				// In laptop posture the remote desktop belongs above the fold. Fall back to
+-				// the lower region only if the upper region is not usable.
+-				viewport = CGRectGetHeight(upper) > TOOLBAR_HEIGHT ? upper : lower;
+-			}
++			CGRect upper = CGRectMake(CGRectGetMinX(bounds), CGRectGetMinY(bounds),
++			                          CGRectGetWidth(bounds),
++			                          MAX(0.0, CGRectGetMinY(fold) - CGRectGetMinY(bounds)));
++			CGRect lower = CGRectMake(CGRectGetMinX(bounds), CGRectGetMaxY(fold),
++			                          CGRectGetWidth(bounds),
++			                          MAX(0.0, CGRectGetMaxY(bounds) - CGRectGetMaxY(fold)));
++			if (CGRectGetHeight(upper) < 120.0 || CGRectGetHeight(lower) < 120.0)
++				continue;
++
++			if (desktopFrame)
++				*desktopFrame = upper;
++			if (trackpadFrame)
++				*trackpadFrame = lower;
++			return YES;
+ 		}
+ 	}
+ #endif
+ 
+-	return viewport;
++	// Flat and vertical-fold postures use the complete application surface.
++	return NO;
++}
++
++- (void)configureDuoTrackpad
++{
++	_duo_trackpad_view = [[UIView alloc] initWithFrame:CGRectZero];
++	[_duo_trackpad_view setBackgroundColor:[UIColor colorWithWhite:0.08 alpha:1.0]];
++	[[_duo_trackpad_view layer] setBorderColor:[[UIColor colorWithWhite:0.28 alpha:1.0] CGColor]];
++	[[_duo_trackpad_view layer] setBorderWidth:1.0];
++	[_duo_trackpad_view setHidden:YES];
++
++	UILabel *label = [[[UILabel alloc] initWithFrame:CGRectZero] autorelease];
++	[label setAutoresizingMask:UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
++	[label setFrame:[_duo_trackpad_view bounds]];
++	[label setText:NSLocalizedString(@"Touchpad\nTap: click  •  Two-finger tap: right click\nTwo-finger swipe: scroll  •  Hold and move: drag",
++	                               @"iPhone Duo touchpad instructions")];
++	[label setNumberOfLines:3];
++	[label setTextAlignment:NSTextAlignmentCenter];
++	[label setTextColor:[UIColor colorWithWhite:0.72 alpha:1.0]];
++	[label setFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium]];
++	[_duo_trackpad_view addSubview:label];
++
++	UITapGestureRecognizer *tap = [[[UITapGestureRecognizer alloc]
++	    initWithTarget:self
++	            action:@selector(handleDuoTrackpadTap:)] autorelease];
++	UITapGestureRecognizer *secondaryTap = [[[UITapGestureRecognizer alloc]
++	    initWithTarget:self
++	            action:@selector(handleDuoTrackpadSecondaryTap:)] autorelease];
++	[secondaryTap setNumberOfTouchesRequired:2];
++	UIPanGestureRecognizer *pan = [[[UIPanGestureRecognizer alloc]
++	    initWithTarget:self
++	            action:@selector(handleDuoTrackpadPan:)] autorelease];
++	[pan setMaximumNumberOfTouches:1];
++	UIPanGestureRecognizer *scroll = [[[UIPanGestureRecognizer alloc]
++	    initWithTarget:self
++	            action:@selector(handleDuoTrackpadScroll:)] autorelease];
++	[scroll setMinimumNumberOfTouches:2];
++	[scroll setMaximumNumberOfTouches:2];
++	UILongPressGestureRecognizer *hold = [[[UILongPressGestureRecognizer alloc]
++	    initWithTarget:self
++	            action:@selector(handleDuoTrackpadLongPress:)] autorelease];
++	[hold setMinimumPressDuration:0.45];
++	[tap requireGestureRecognizerToFail:hold];
++	[pan setDelegate:self];
++	[hold setDelegate:self];
++
++	[_duo_trackpad_view addGestureRecognizer:tap];
++	[_duo_trackpad_view addGestureRecognizer:secondaryTap];
++	[_duo_trackpad_view addGestureRecognizer:pan];
++	[_duo_trackpad_view addGestureRecognizer:scroll];
++	[_duo_trackpad_view addGestureRecognizer:hold];
++	[[self view] addSubview:_duo_trackpad_view];
++	[label setFrame:[_duo_trackpad_view bounds]];
++}
++
++- (void)handleDuoTrackpadPan:(UIPanGestureRecognizer *)gesture
++{
++	CGPoint location = [gesture locationInView:_duo_trackpad_view];
++	if ([gesture state] == UIGestureRecognizerStateBegan)
++		_duo_trackpad_last_location = location;
++	else if ([gesture state] == UIGestureRecognizerStateChanged)
++	{
++		CGPoint delta = CGPointMake((location.x - _duo_trackpad_last_location.x) * 1.5,
++		                            (location.y - _duo_trackpad_last_location.y) * 1.5);
++		[self moveCursorByViewportDelta:delta];
++		_duo_trackpad_last_location = location;
++	}
++}
++
++- (void)handleDuoTrackpadTap:(UITapGestureRecognizer *)gesture
++{
++	(void)gesture;
++	[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(YES)];
++	[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(NO)];
++}
++
++- (void)handleDuoTrackpadSecondaryTap:(UITapGestureRecognizer *)gesture
++{
++	(void)gesture;
++	[self sendMouseButtonEvent:GetRightMouseButtonClickEvent(YES)];
++	[self sendMouseButtonEvent:GetRightMouseButtonClickEvent(NO)];
++}
++
++- (void)handleDuoTrackpadScroll:(UIPanGestureRecognizer *)gesture
++{
++	CGFloat delta = [gesture translationInView:_duo_trackpad_view].y;
++	if (fabs(delta) < GetScrollGestureDelta())
++		return;
++	CGPoint position = [self currentCursorViewPosition];
++	[_session sendInputEvent:[self eventDescriptorForMouseEvent:GetMouseWheelEvent(delta > 0)
++	                                                   position:position]];
++	[gesture setTranslation:CGPointZero inView:_duo_trackpad_view];
++}
++
++- (void)handleDuoTrackpadLongPress:(UILongPressGestureRecognizer *)gesture
++{
++	if ([gesture state] == UIGestureRecognizerStateBegan)
++	{
++		[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(YES)];
++		_duo_trackpad_drag_active = YES;
++	}
++	else if ([gesture state] == UIGestureRecognizerStateEnded ||
++	         [gesture state] == UIGestureRecognizerStateCancelled ||
++	         [gesture state] == UIGestureRecognizerStateFailed)
++	{
++		if (_duo_trackpad_drag_active)
++			[self sendMouseButtonEvent:GetLeftMouseButtonClickEvent(NO)];
++		_duo_trackpad_drag_active = NO;
++	}
+ }
+ 
+ - (void)fitSessionViewToViewport
+@@ -1029,9 +1182,13 @@
+ 
+ 	CGFloat fitScale =
+ 	    MIN(viewportSize.width / remoteSize.width, viewportSize.height / remoteSize.height);
++	NSInteger displayScalePercent = [[_session params] intForKey:@"display_scale_percent"];
++	if (displayScalePercent < 100 || displayScalePercent > 200)
++		displayScalePercent = 100;
++	CGFloat requestedScale = fitScale * ((CGFloat)displayScalePercent / 100.0f);
+ 	[_session_scrollview setMinimumZoomScale:fitScale];
+-	[_session_scrollview setMaximumZoomScale:MAX(2.0f, fitScale)];
+-	[_session_scrollview setZoomScale:fitScale animated:NO];
++	[_session_scrollview setMaximumZoomScale:MAX(3.0f, requestedScale)];
++	[_session_scrollview setZoomScale:requestedScale animated:NO];
+ 	[_session_scrollview setContentOffset:CGPointZero animated:NO];
+ 	_last_session_viewport_size = viewportSize;
+ 	[self centerSessionViewInViewport];
+diff --git a/client/iOS/Controllers/ScreenSelectionController.h b/client/iOS/Controllers/ScreenSelectionController.h
+index 4df34e1..4df66cc 100644
+--- a/client/iOS/Controllers/ScreenSelectionController.h
++++ b/client/iOS/Controllers/ScreenSelectionController.h
+@@ -22,10 +22,12 @@
+ 	// available options
+ 	OrderedDictionary *_color_options;
+ 	NSArray *_resolution_modes;
++	NSArray *_display_scale_options;
+ 
+ 	// current selections
+ 	int _selection_color;
+ 	int _selection_resolution;
++	int _selection_display_scale;
+ }
+ 
+ - (id)initWithConnectionParams:(ConnectionParams *)params;
+diff --git a/client/iOS/Controllers/ScreenSelectionController.m b/client/iOS/Controllers/ScreenSelectionController.m
+index b1ca4c0..7711c5c 100644
+--- a/client/iOS/Controllers/ScreenSelectionController.m
++++ b/client/iOS/Controllers/ScreenSelectionController.m
+@@ -34,6 +34,7 @@
+ 
+ 		_color_options = (OrderedDictionary *)[SelectionForColorSetting() retain];
+ 		_resolution_modes = [ResolutionModes() retain];
++		_display_scale_options = [[NSArray alloc] initWithObjects:@100, @125, @150, @200, nil];
+ 
+ 		// init current selections
+ 		NSUInteger idx = [_color_options
+@@ -49,6 +50,10 @@
+ 		                      [_params intForKeyPath:[self keyPathForKey:@"width"]],
+ 		                      [_params intForKeyPath:[self keyPathForKey:@"height"]])];
+ 		_selection_resolution = (idx != NSNotFound) ? idx : 0;
++
++		NSInteger displayScale = [_params intForKeyPath:[self keyPathForKey:@"display_scale_percent"]];
++		idx = [_display_scale_options indexOfObject:[NSNumber numberWithInteger:displayScale]];
++		_selection_display_scale = (idx != NSNotFound) ? idx : 0;
+ 	}
+ 	return self;
+ }
+@@ -60,6 +65,7 @@
+ 	[_keyPath autorelease];
+ 	[_color_options autorelease];
+ 	[_resolution_modes autorelease];
++	[_display_scale_options autorelease];
+ }
+ 
+ - (NSString *)keyPathForKey:(NSString *)key
+@@ -81,7 +87,7 @@
+ 
+ - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
+ {
+-	return 2;
++	return 3;
+ }
+ 
+ - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+@@ -89,7 +95,18 @@
+ 	// Return the number of rows in the section.
+ 	if (section == 0)
+ 		return [_color_options count];
+-	return [_resolution_modes count] + 2; // +2 for custom width/height input fields
++	if (section == 1)
++		return [_resolution_modes count] + 2; // +2 for custom width/height input fields
++	return [_display_scale_options count];
++}
++
++- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
++{
++	if (section == 0)
++		return NSLocalizedString(@"Color depth", @"Color depth settings header");
++	if (section == 1)
++		return NSLocalizedString(@"Remote resolution", @"Remote resolution settings header");
++	return NSLocalizedString(@"Display size", @"Local display scale settings header");
+ }
+ 
+ - (UITableViewCell *)tableView:(UITableView *)tableView
+@@ -113,6 +130,18 @@
+ 				cell = [self tableViewCellFromIdentifier:TableCellIdentifierText];
+ 			break;
+ 
++		case 2:
++		{
++			cell = [self tableViewCellFromIdentifier:TableCellIdentifierMultiChoice];
++			NSInteger percent = [[_display_scale_options objectAtIndex:[indexPath row]] integerValue];
++			NSString *suffix = percent == 100
++			                       ? NSLocalizedString(@" (Fit)", @"Fit display scale suffix")
++			                       : @"";
++			[[cell textLabel]
++			    setText:[NSString stringWithFormat:@"%ld%%%@", (long)percent, suffix]];
++			break;
++		}
++
+ 		default:
+ 			break;
+ 	}
+@@ -146,7 +175,12 @@
+ 	}
+ 
+ 	// set default checkmark
+-	if ([indexPath row] == ([indexPath section] == 0 ? _selection_color : _selection_resolution))
++	int selectedRow = _selection_display_scale;
++	if ([indexPath section] == 0)
++		selectedRow = _selection_color;
++	else if ([indexPath section] == 1)
++		selectedRow = _selection_resolution;
++	if ([indexPath row] == selectedRow)
+ 		[cell setAccessoryType:UITableViewCellAccessoryCheckmark];
+ 	else
+ 		[cell setAccessoryType:UITableViewCellAccessoryNone];
+@@ -163,7 +197,11 @@
+ 		return;
+ 
+ 	// has selection change?
+-	int cur_selection = ([indexPath section] == 0 ? _selection_color : _selection_resolution);
++	int cur_selection = _selection_display_scale;
++	if ([indexPath section] == 0)
++		cur_selection = _selection_color;
++	else if ([indexPath section] == 1)
++		cur_selection = _selection_resolution;
+ 	if ([indexPath row] != cur_selection)
+ 	{
+ 		[tableView deselectRowAtIndexPath:indexPath animated:NO];
+@@ -189,7 +227,7 @@
+ 			[_params setInt:sel_value forKeyPath:[self keyPathForKey:@"colors"]];
+ 			_selection_color = [indexPath row];
+ 		}
+-		else
++		else if ([indexPath section] == 1)
+ 		{
+ 			// update selection index and params value
+ 			int width, height;
+@@ -214,6 +252,14 @@
+ 			[[self tableView] reloadRowsAtIndexPaths:indexPaths
+ 			                        withRowAnimation:UITableViewRowAnimationNone];
+ 		}
++		else
++		{
++			NSInteger percent =
++			    [[_display_scale_options objectAtIndex:[indexPath row]] integerValue];
++			[_params setInt:(int)percent
++			       forKeyPath:[self keyPathForKey:@"display_scale_percent"]];
++			_selection_display_scale = [indexPath row];
++		}
+ 	}
+ }
+ 
+diff --git a/client/iOS/Defaults.plist b/client/iOS/Defaults.plist
+index dd495a2..a72f62f 100644
+--- a/client/iOS/Defaults.plist
++++ b/client/iOS/Defaults.plist
+@@ -16,6 +16,8 @@
+ 		<integer>0</integer>
+ 		<key>colors</key>
+ 		<integer>32</integer>
++		<key>display_scale_percent</key>
++		<integer>100</integer>
+ 		<key>perf_font_smoothing</key>
+ 		<false/>
+ 		<key>perf_menu_animation</key>
+diff --git a/client/iOS/iFreeRDP.plist b/client/iOS/iFreeRDP.plist
+index 0a3d759..861436e 100644
+--- a/client/iOS/iFreeRDP.plist
++++ b/client/iOS/iFreeRDP.plist
+@@ -31,6 +31,8 @@
+ 	<string>1</string>
+ 	<key>LSRequiresIPhoneOS</key>
+ 	<true/>
++	<key>UIRequiresFullScreen</key>
++	<true/>
+ 	<key>UIApplicationSupportsIndirectInputEvents</key>
+ 	<true/>
+ 	<key>UIApplicationSceneManifest</key>
+

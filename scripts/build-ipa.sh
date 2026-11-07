@@ -27,6 +27,10 @@ git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios27-table-selection.patch"
 git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-session-init.patch"
 git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-ios-session-init.patch"
+git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-productivity.patch"
+git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-productivity.patch"
+git -C "${SOURCE_DIR}" apply --check "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-controls.patch"
+git -C "${SOURCE_DIR}" apply "${PROJECT_ROOT}/patches/freerdp-3.28.0-duo-controls.patch"
 
 echo "Configuring arm64 iOS device build"
 cmake -S "${SOURCE_DIR}/client/iOS" -B "${BUILD_DIR}" \
